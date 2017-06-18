@@ -1,4 +1,4 @@
-name = cm_series_slot
+name = CMA Series Slot
 description = Module will allow operators to schedule series slots. Each slot is either a premiere of a show or a repeat of a show. 
 core = 7.x
 
