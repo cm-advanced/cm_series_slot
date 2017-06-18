@@ -1,0 +1,1563 @@
+<?php
+function cm_series_slot_menu() {
+
+  $items = array();
+   
+  $items['admin/programming/slot_grid'] = 
+    array(
+	  'title' => t('Slot Grid'),
+	  'type' => MENU_CALLBACK,
+	  'page callback' => 'drupal_get_form',
+	  'page arguments' => array('cm_series_slot_grid_form'),
+	  'access arguments' => array('administer cm_airing'),
+	  );
+
+
+
+  return $items;
+}
+
+/**
+ * implements hook_element_info_alter() 
+ * 
+ */
+function cm_series_slot_element_info_alter(&$type) {
+  if (isset($type['date_popup'])) {
+    $type['date_popup']['#process'][] = 
+      'cm_series_slot_date_popup_process_alter';
+  }
+}
+
+/**                          
+ * Implements hook_init(). 
+ */
+function cm_series_slot_init() {
+  drupal_add_css(drupal_get_path('module', 'cm_series_slot') .
+                 '/cm_series_slot.css');
+
+}
+/**
+ * function to remove the description from date_popup
+ * 
+ */
+function cm_series_slot_date_popup_process_alter(&$element, &$form_state, $context) {
+  if ((arg(2) == 'slot_grid') ||
+      ((arg(0) == 'system') && (arg(1) == 'ajax'))) {
+    unset($element['date']['#description']);
+    unset($element['time']['#description']);
+  }
+  return $element;
+}
+
+
+function cm_series_slot_grid_form($form, $form_state, $no_js_use = FALSE) {
+
+  drupal_add_css('.container-inline-date .date-padding {padding:0px;}', 
+		 'inline');
+
+  $form = array();
+  $form['#tree'] = TRUE;
+  $form['#attributes']['enctype'] = 'multipart/form-data';
+
+  $nid = filter_input(INPUT_GET, 'series_request_nid');
+  if ($nid) {
+    $form['series_request_nid'] = array('#type' => 'hidden', '#value'=>$nid);
+  }
+  else {
+    $nid = $form_state['values']['series_request_nid'];
+    $form['series_request_nid'] = array('#type' => 'hidden', '#value'=>$nid);
+  }
+  $series_request = $nid ? node_load($nid) : NULL;
+
+  if (!$series_request) {
+    drupal_set_message("Sorry, we can't do that for you.", 'error');
+    drupal_goto("");
+    return;
+  }
+
+  $title = $series_request ? $series_request->title :
+    "Missing Series Request!";
+  
+  $is_live = cm_series_slot_get_single_field_value($series_request, 
+						   'field_live', 
+						   'value');  
+  
+
+  $form['slot_grid'] = array(
+				 '#type' => 'fieldset',
+				 '#title' => t('Programming Slot Grid'),
+				 "#prefix" => '<div id="form-slot_grid">',
+				 "#suffix" => '</div>',
+				 '#collapsible' => FALSE,
+				 );
+  $title = l($title, "node/".$nid);
+  
+  $markup = "<h2>".$title."</h2>";
+  $markup .= views_embed_view('series_request_scheduling_information',
+			      'block', $nid);
+
+  $form['slot_grid']['series_request_info'] = 
+    array(
+	  '#type' => 'markup',
+	  '#markup' => $markup,
+	  );
+
+
+  $markup = l("View Series Request", "node/".$nid)."</br>";
+
+  $dest = 'admin/programming/slot_grid?series_request_nid=' . $nid;
+  $markup .= l("Edit Series Request", "node/".$nid."/edit",
+	       array('query' => array('destination' => $dest)))."</br>";
+
+  $status = 
+    cm_series_slot_get_single_field_value($series_request, 
+					  'field_series_request_status', 
+					  'value');  
+  $markup .= cm_series_slot_series_request_cleanup_link($series_request)
+    ."</br>";
+  if ($status == 'Approved') {
+    $markup .= 
+      l("Batch Schedule", 
+	"admin/programming/series-requests/series-requests-batch_scheduler");
+  }
+
+  $form['slot_grid']['series_request_links'] = array(
+						     '#type' => 'markup',
+						     '#markup' => $markup,
+						     );
+
+  if (empty($form_state['num_show_rows'])) {
+    $form_state['num_show_rows'] = 1;
+  }
+
+  if (empty($form_state['num_repeats'])) {
+    $form_state['num_repeats'] = 1;
+  }
+
+  $form['slot_grid']['slot_grid_cells'] = 
+    array(
+	  '#type' => 'fieldset',
+	  '#title' => $title,
+	  '#prefix' => '<div id="slot-grid-wrapper">',
+	  '#suffix' => '</div>',
+	  );
+
+  $form['slot_grid']['slot_grid_cells']['add_show_repeat_button'] = 
+    array(
+	  '#type' => 'submit',
+	  '#value' => t('Add another Repeat'),
+	  '#submit' => array('cm_series_slot_add_another_repeat_column'),
+	  '#ajax' => array(
+			   'callback' => 'cm_series_slot_grid_callback',
+			   'wrapper' => 'slot-grid-wrapper',
+			   ),
+	  );
+
+  $form_values = cm_series_slot_stash_form_values($form_state);
+  $premiere_slots = cm_series_slot_premiere_slots($form_values);
+  $db_values = cm_series_slot_get_slots_for_series_request($nid);
+
+  $cell_fields = array(1=>'live_source', 
+		       2=>'channel', 
+		       3=>'start_time');
+
+  $max_x = $form_state['num_repeats'] + 5;
+  $max_y = $form_state['num_show_rows'];
+  $max_z = count($cell_fields);
+
+  $max_db_x = $max_db_y = 0;
+  foreach ($db_values as $x => $y_values) {
+    $max_db_x = $x;
+    foreach ($y_values as $y => $field_values) {
+      $max_db_y = ($y > $max_db_y) ? $y : $max_db_y;
+    }
+  }
+
+  $max_x = ($max_db_x > $max_x) ? $max_db_x : $max_x;
+  $max_y = ($max_db_y > $max_y) ? $max_db_y : $max_y;
+
+  global $cm_series_slot_max_rows;
+  $max_y = $cm_series_slot_max_rows ? $cm_series_slot_max_rows : $max_y;
+
+  $form_state['num_show_rows'] = $max_y;
+
+  for ($y = 1; $y <= $max_y;  $y++) {
+    for ($x = 1; $x <= $max_x; $x++) {
+      for ($z = 1; $z <= $max_z;  $z++) {
+	$prefix = '';
+	$suffix = '';
+
+	$class = ($y%2==0) ? 'even' : 'odd';
+	if ($x==1 && $y==1 && $z==1) {
+	  $prefix = "<table class='cm_series_slot_grid'><tr>".
+	    "<th>Show Premiere</th>";
+	  for ($i = 1; $i < $max_x; $i++) {
+	    $prefix .= "<th>Show Repeat #".$i."</th>";
+	  }
+	  $prefix .= "</tr><tr class='$class'><td  class='$class'>";
+	}
+	else if ($x==1 && $z==1) {
+	  $prefix .= "<tr  class='$class'><td class='$class'>";
+	}
+	else if ($z == 1) {
+	  $prefix .= "<td class='$class'>";
+	}
+	else {
+	  $prefix .= '';
+	}
+
+	if ($x==$max_x && $y==$max_y && $z==$max_z) {
+	  $suffix .= "</td></tr></table>";
+	}
+	else if ($x==$max_x && $z==$max_z) {
+	  $suffix .= "</td></tr>";
+	}
+	else if ($z == $max_z) {
+	  $suffix .= "</td>";
+	}
+	else {
+	  $suffix .= '</br>';
+	}
+	$db_slot = $db_values[$x][$y];
+	$airing_id = isset($db_slot['airing_id']) ? $db_slot['airing_id'] :
+	  NULL;
+	$disabled = FALSE;
+	$airing = NULL;
+	if ($airing_id) {
+	  $airing = entity_load('airing', array($airing_id));
+	  $airing = array_pop($airing);
+	  if ($airing) {
+	    $disabled = TRUE;
+	  }
+	}
+
+	//if not disabled and not a premiere, fetch the premiere to see if it
+	//has an airing
+	if (!$disabled && $x != 1) {
+	  $premiere_slot = $db_values[1][$y];
+	  if ($premiere_slot['airing_id']){
+	    $disabled = TRUE;
+	  }
+	}
+       
+	$is_premiere = ($x == 1);
+	  
+	$field = $cell_fields[$z]; 
+	$key = $field."_".$x."_".$y;
+
+	if (($field == 'live_source' && $is_live && $is_premiere) || 
+	    $field == 'channel') {
+	  if ($field == 'channel') {
+	    $options = 
+	     taxonomy_allowed_values(field_info_field('field_airing_channel'));
+	    
+	    $options[0] = '<select>';
+	    ksort($options);
+	  }
+	  else if ($field == 'live_source') {
+	    $options = 
+	      list_allowed_values(field_info_field('field_live_source'));
+	    $options[0] = '<select>';
+	    ksort($options);
+	  }   
+	  if (isset($db_values[$x][$y][$field])) {
+	    $default = $db_values[$x][$y][$field];
+	  }
+	  else if (($max_y > $max_db_y) && ($y == $max_y) ){
+	    $prev_y = $y - 1;
+	    $default = $form_values[$x][$prev_y][$field];
+	  }
+	  else {
+	    $default = '';
+	    if (!$is_premiere && $disabled) {
+	      $form['slot_grid']['slot_grid_cells'][$key] = 
+		array(
+		      '#markup' => '',
+		      '#prefix' => $prefix,
+		  '#suffix' => $suffix,
+		  );
+	      
+	      continue;
+	    }
+	  }
+
+	  $form['slot_grid']['slot_grid_cells'][$key] = 
+	    array(
+		  '#type' => 'select',
+		  '#title' => $field,
+		  '#options' => $options, 		  
+		  '#default_value' => $default,
+		  '#prefix' => $prefix,
+		  '#suffix' => $suffix,
+		  '#disabled' => $disabled,
+		  );
+	}
+	else if ($field == 'live_source') {
+	  $markup = $is_live ?
+	    '&nbsp;<br/><br/><br/>&nbsp;' : '&nbsp;';
+	  $form['slot_grid']['slot_grid_cells'][$key] = 
+	    array(
+		  '#markup' => $markup,
+		  '#prefix' => $prefix,
+		  '#suffix' => $suffix,
+		  );
+	}
+	else if ($field == 'start_time') {
+	  if (isset($db_values[$x][$y][$field])) {
+	    $default = $db_values[$x][$y][$field];
+	  }
+	  else if (($max_y > $max_db_y) && ($y == $max_y) ){
+	    $prev_y = $y - 1;
+	    $default = $form_values[$x][$prev_y][$field];
+
+	    if ($default) {
+	      $time_object = 
+		new DateTime($default, 
+			     new DateTimeZone('America/Los_Angeles'));
+
+	      //time_increment
+	      $increment = "+".$form_state['values']['slot_grid']
+		['slot_grid_cells']['time_increment']." week";
+
+	      $time_object->modify($increment);
+	      $default = $time_object->format("Y-m-d H:i:s");
+	    }
+	  }
+	  else {
+	    if (!$is_premiere && $disabled) {
+	      $form['slot_grid']['slot_grid_cells'][$key] = 
+		array(
+		      '#markup' => '',
+		      '#prefix' => $prefix,
+		  '#suffix' => $suffix,
+		  );
+	      
+	      continue;
+	    }
+	    $default = '';
+	  }
+
+	  $airing_links = '';
+	  if ($airing) {
+	    $show_nid = 
+	      cm_series_slot_get_single_field_value($airing, 
+						    'field_airing_show_ref', 
+						    'target_id');
+
+	    $show = $show_nid ? node_load($show_nid) : NULL;
+
+	    
+
+	    $airing_links .= l('View Scheduled Airing', 
+			      "airing/".$airing->airing_id);
+	    $airing_links .= "<br/>";
+
+	    if (!$is_premiere) {
+	      $airing_links .= l('Delete Scheduled Airing', 
+				 "airing/".$airing->airing_id."/delete",
+				 array('query'=>
+				       array('destination'=>
+					     "admin/programming/slot_grid?".
+					     "series_request_nid=".$nid))).
+		"<br/>";
+	    }
+	    else {
+	      $airing_links .= "<br/>";
+	    }
+	    $airing_links .= cm_series_slot_display_airing($airing, $show);
+	    $airing_links .= "<br/>";
+	  }
+	  else {
+	    $airing_links = "<br/><br/>";
+	  }
+	  
+	  $form['slot_grid']['slot_grid_cells'][$key] =
+	    array(
+		  '#title' => $field,
+		  '#type' => 'date_popup',
+		  '#date_label_position' => 'within',
+		  '#size' => 15,
+		  '#default_value' => $default,
+		  '#disabled' => $disabled,
+		  '#timepicker' => 'timepicker',
+		  '#timepicker_options' => array(
+						 'showPeriod' => TRUE,
+						 'amPmText' =>array('am','pm'),
+						 'periodSeparator' => '',
+						 'rows' => 2,
+						 'minutes' => 
+						 array(
+						       'starts' => 0,
+						       'ends' => 30,
+						       'interval' => 30,
+						       ),
+						 'showCloseButton' => TRUE,
+						 'closeButtonText' => 
+						 t('Close'),
+						 ),
+		  '#description' => '',
+		  '#prefix' => $prefix,
+		  '#suffix' => $airing_links.$suffix,
+		  );
+	}	
+      }
+    }  
+  }
+
+  $form['slot_grid']['slot_grid_cells']['time_increment'] = 
+    array(
+	  '#type' => 'select',
+	  '#title' => t('Time Increment'),
+	  '#options' => array(1=>'1 week',
+			      2=>'2 weeks',
+			      3=>'3 weeks',
+			      4=>'4 weeks',
+			      5=>'5 weeks',
+			      6=>'6 weeks',
+			      7=>'7 weeks',
+			      8=>'8 weeks',
+			      ),
+	  '#prefix' => "<table><tr><td>",
+	  );
+
+  $form['slot_grid']['slot_grid_cells']['add_show_row_button'] = 
+    array(
+	  '#type' => 'submit',
+	  '#value' => t('Add another Show Row'),
+	  '#submit' => array('cm_series_slot_add_another_show_row'),
+	  '#ajax' => array(
+			   'callback' => 'cm_series_slot_grid_callback',
+			   'wrapper' => 'slot-grid-wrapper',
+			   ),
+	  '#suffix' => "</td>",
+	  );
+
+  $form['slot_grid']['slot_grid_cells']['remove_show_row_button'] = 
+    array(
+	  '#type' => 'submit',
+	  '#value' => t('Remove Show Row'),
+	  '#submit' => array('cm_series_slot_remove_show_row'),
+	  '#ajax' => array(
+			   'callback' => 'cm_series_slot_grid_callback',
+			   'wrapper' => 'slot-grid-wrapper',
+			   ),
+	  '#prefix' => "<td>",
+	  '#suffix' => "</td></tr></table>",
+	  );
+
+  $form['slot_grid']['actions'] = array(
+					'#type' => 'actions',
+					);
+
+  $options = 
+    list_allowed_values(field_info_field('field_series_request_status'));
+  $options[0] = '<select>';
+  ksort($options);
+
+  $default = 
+    cm_series_slot_get_single_field_value($series_request, 
+					  'field_series_request_status', 
+					  'value');  
+
+
+  $form['slot_grid']['series_request_status'] = 
+    array(
+	  '#type' => 'select',
+	  '#title' => t('Series Request Status'),
+	  '#options' => $options,
+	  '#default_value' => $default,
+	  );
+
+  $form['slot_grid']['submit'] = array(
+				       '#type' => 'submit',
+				       '#value' => t('Save All Slots'),
+				       );
+  return $form;
+}
+
+// ---------------  AJAX CALLBACK  FUNCTIONS FOR TEXT FIELD-----------------
+
+function cm_series_slot_add_another_show_row($form, &$form_state) {
+
+  if (!isset($form_state['num_show_rows'])) {
+    $form_state['num_show_rows'] = 0;
+    $form_state['num_show_rows']++;
+  }
+  $form_state['num_show_rows']++;
+
+  $form_state['rebuild'] = TRUE;
+}
+
+
+function cm_series_slot_remove_show_row($form, &$form_state) {
+  global $cm_series_slot_max_rows;
+
+  $form_state['num_show_rows']--;
+  $cm_series_slot_max_rows = $form_state['num_show_rows'];
+  $form_state['rebuild'] = TRUE;
+}
+
+function cm_series_slot_add_another_repeat_column($form, &$form_state) {
+
+  if (!isset($form_state['num_repeats'])) {
+    $form_state['num_repeats'] = 0;
+    $form_state['num_repeats']++;
+  }
+  $form_state['num_repeats']++;
+
+  $form_state['rebuild'] = TRUE;
+
+}
+/**
+ * Call back is used by all the ajax buttons on the slot grid, it rebuilds the
+ * grid
+ */
+function cm_series_slot_grid_callback($form, $form_state) {
+  return $form['slot_grid']['slot_grid_cells'];
+}
+
+function cm_series_slot_grid_form_validate($form, &$form_state) {
+  
+  if ($form_state['clicked_button']['#value'] == 'Remove Show Row') {
+    return;
+  }
+  else if ($form_state['clicked_button']['#value'] == 'Add another Repeat') {
+    return;
+  }
+
+  $values = cm_series_slot_stash_form_values($form_state);
+ 
+  $premieres = cm_series_slot_premiere_slots($values);
+
+  $nid = $form_state['values']['series_request_nid'];
+  $db_values = cm_series_slot_get_slots_for_series_request($nid);
+
+  //fetch series request
+  $series_request = node_load($nid);
+
+  $is_live = cm_series_slot_get_single_field_value($series_request, 
+						   'field_live', 
+						   'value');  
+
+  
+  //make sure premiere channel and time values set
+  foreach($premieres as $y => $premiere) {
+    if ($is_live && !$premiere['live_source']) {
+      $key = 'live_source_1_'.$y;
+      form_set_error('slot_grid][slot_grid_cells]['.$key,
+		     t("You must select a live source for the show premiere ".
+		       "when the Series Request is for Live."));
+    }
+    if (!$premiere['channel']) {
+      $key = 'channel_1_'.$y;
+      form_set_error('slot_grid][slot_grid_cells]['.$key,
+		     t("You must select a channel for the show premiere."));
+    }
+    $time = $premiere['start_time'];
+    if ($time == 'error') {
+      //error has already been handled
+    }
+    else if (!$time) {
+      $key = 'start_time_1_'.$y;
+      form_set_error('slot_grid][slot_grid_cells]['.$key,
+		     t("You must select a time for the show premiere."));
+    }
+    else if ($premiere['time_object']){
+      $now = new DateTime($value, new DateTimeZone('America/Los_Angeles'));
+      $interval = $premiere['time_object']->getTimestamp() - 
+	$now->getTimestamp(); 
+      $slot_airing = $db_values[1][$y]['airing_id'];
+      if ($interval < 0 && !$slot_airing) {
+	$key = 'start_time_1_'.$y;
+	form_set_error('slot_grid][slot_grid_cells]['.$key,
+		       t("Premiere times must be in the future."));
+      }
+      else {
+	$prev_y_index = $y -1;
+
+	if (isset($values[1][$prev_y_index])) {
+	  $prev_time_object = $values[1][$prev_y_index]['time_object'];
+
+	  $interval = 
+	    $premiere['time_object']->getTimestamp() -
+	    $prev_time_object->getTimestamp(); 
+
+	  if ($interval <= 0) {
+	    $key = 'start_time_1_'.$y;
+	    form_set_error('slot_grid][slot_grid_cells]['.$key,
+			   t("Premiere start times must be later than the ".
+			     "previous show premiere start time."));
+	  }
+	}
+
+      }
+
+ 
+      //fetch start and and times
+      $start_date = 
+	cm_series_slot_get_single_field_value($series_request, 
+					      'field_season_request_dates', 
+					      'value');  
+      $start_object = 
+	new DateTime($start_date, new DateTimeZone('America/Los_Angeles'));
+
+            
+      $interval = 
+	$premiere['time_object']->getTimestamp() -
+	$start_object->getTimestamp(); 
+
+      if ($interval < 0) {
+	$key = 'start_time_1_'.$y;
+	form_set_error('slot_grid][slot_grid_cells]['.$key,
+		       t("Premiere start times must be later than the ".
+			 "start of this series request's season"));
+      }
+      else {
+	$end_date = 
+	  cm_series_slot_get_single_field_value($series_request, 
+						'field_season_request_dates', 
+						'value2');  
+	$end_object = 
+	  new DateTime($end_date, new DateTimeZone('America/Los_Angeles'));
+
+	date_add($end_object, new DateInterval('PT23H59M59S'));
+
+	$interval = 
+	  $premiere['time_object']->getTimestamp()-$end_object->getTimestamp();
+
+	if ($interval > 0) {
+	  $key = 'start_time_1_'.$y;
+	  form_set_error('slot_grid][slot_grid_cells]['.$key,
+			 t("Premiere start times must be earlier than the ".
+			   "end of this series request's season"));
+	}
+      }
+    }
+
+    foreach ($premiere['repeats'] as $index => $repeat) {
+      $time_object = $repeat['time_object'];
+      $x = $index + 2;
+
+      if ($time_object && !$repeat['channel']) {
+	$key = 'channel_'.$x.'_'.$y;
+	form_set_error('slot_grid][slot_grid_cells]['.$key,
+		     t("You must select a channel for the show repeat " .
+		       "or remove the time info below."));
+      }
+      $time = $repeat['start_time'];
+      
+      if ($time == 'error') {
+	//error has already been handled
+      }
+      else if ($repeat['channel'] && !$time) {
+	$key = 'start_time_'.$x.'_'.$y;
+	form_set_error('slot_grid][slot_grid_cells]['.$key,
+		       t("You must select a time for the show repeat."));
+      }
+      else if ($time_object && $premiere['time_object']) {
+	$interval = $time_object->getTimestamp() -
+	  $premiere['time_object']->getTimestamp(); 
+
+	if ($interval < 0) {
+	  $key = 'start_time_'.$x.'_'.$y;
+	  form_set_error('slot_grid][slot_grid_cells]['.$key,
+			 t("Repeat start times must be later than the ".
+			   "start time of the show premiere."));
+
+	}
+	else {
+	  $end_date = 
+	    cm_series_slot_get_single_field_value($series_request, 
+						  'field_season_request_dates',
+						  'value2');  
+	  $end_object = 
+	    new DateTime($end_date, new DateTimeZone('America/Los_Angeles'));
+	    
+	  date_add($end_object, new DateInterval('PT23H59M59S'));
+
+	  $interval = 
+	    $time_object->getTimestamp() - $end_object->getTimestamp(); 
+  
+	  if ($interval > 0) {
+	    $key = 'start_time_'.$x.'_'.$y;
+	    form_set_error('slot_grid][slot_grid_cells]['.$key,
+			   t("Repeat start times must be earlier than the".
+			     " end of this series request's season."));
+	  }
+	}
+      }
+    } 
+  }
+}
+
+
+function cm_series_slot_get_slots_for_series_request($nid) {
+  $ret = NULL;
+  $sql = 
+    "SELECT * FROM {cm_series_slot} where series_request_nid = :nid";
+  $results = db_query($sql, array(':nid' => $nid));
+  
+  while($slot = $results->fetchObject()) {
+    $ret[$slot->x] = $ret[$slot->x] ? $ret[$slot->x] : array();
+    $ret[$slot->x][$slot->y] = $ret[$slot->x][$slot->y] ? 
+      $ret[$slot->x][$slot->y] : array();
+    $ret[$slot->x][$slot->y]['live_source'] = $slot->live_source;
+    $ret[$slot->x][$slot->y]['channel'] = $slot->channel;
+    $ret[$slot->x][$slot->y]['start_time'] = $slot->start_time;
+    $ret[$slot->x][$slot->y]['end_time'] = $slot->end_time;
+    $ret[$slot->x][$slot->y]['airing_id'] = $slot->airing_id;
+  }
+  
+  return $ret;
+}
+
+function cm_series_slot_grid_form_submit($form, &$form_state) {
+
+  $form_values = cm_series_slot_stash_form_values($form_state) ;
+  $nid = $form_state['values']['series_request_nid'];
+
+  //fetch currently existing slot data
+  $db_values = cm_series_slot_get_slots_for_series_request($nid);
+
+  //fetch series request
+  $series_request = node_load($nid);
+
+  //find runtime 
+  $tid = cm_series_slot_get_single_field_value($series_request, 
+					       'field_runtime_default', 
+					       'tid');  
+
+  $runtime = cm_series_slot_get_runtime_seconds_for_tid($tid);
+
+  //find max y from db_values
+  $max_db_x = $max_db_y = 0;
+  foreach ($db_values as $x => $y_values) {
+    $max_db_x = $x;
+    foreach ($y_values as $y => $field_values) {
+      $max_db_y = ($y > $max_db_y) ? $y : $max_db_y;
+    }
+  }
+
+  $max_form_x = $max_form_y = 0;
+  foreach ($form_values as $x => $y_values) {
+    $max_form_x = $x;
+    foreach ($y_values as $y => $field_values) {
+      $max_form_y = ($y > $max_form_y) ? $y : $max_form_y;
+      $start_object = $field_values['time_object'];
+      $db_slot = $db_values[$x][$y];
+     
+      if ($start_object) {
+	$field_values['start_timestamp'] = $start_object->getTimestamp();
+	$end_object = $start_object;
+	//determin endtime
+	$increment_string = 'PT' . $runtime . 'S';
+	$end_object = $end_object->add(new DateInterval($increment_string));
+
+	$field_values['end_time'] = $end_object->format('Y-m-d H:i:s'); 
+	$field_values['end_timestamp'] = $end_object->getTimestamp();
+
+	//no longer need it, removing for db/form field value comparisons
+	unset($field_values['time_object']);
+      }
+
+      if ($db_slot) {
+	$needs_update = FALSE;
+	$needs_delete = FALSE;
+	$update_fields_string = "";
+	$is_first = TRUE;
+	foreach ($field_values as $field=>$value) {
+	  $optional_quote = intval($value) ? "'" : '';
+
+	  if ($value) {
+	    if ($is_first) {
+	      $is_first = FALSE;
+	    }
+	    else {
+	      $update_fields_string .= " , ";
+	    }
+	  
+	    $update_fields_string .= " " . $field . "=" . $optional_quote .
+	      $value . $optional_quote; 
+	  }
+
+	  $value = ($value && $field == 'start_time') ? $value.":00" : $value;
+	  if ($value && (($value) != $db_slot[$field])) {
+	    $needs_update = TRUE;
+	  }
+	  else if (($field != 'live_source') && ($value != $db_slot[$field])) {
+	    $needs_delete = TRUE;
+	    break;
+	  }
+	}
+	//if no values exist but they exist in db, then delete from db
+	if ($needs_delete) {
+	  $sql = 
+	    "DELETE from {cm_series_slot} 
+             WHERE series_request_nid = :nid AND x = :x and y=:y";
+	  db_query($sql, array(':nid' => $nid, ':x' => $x, ':y' => $y));
+
+	}
+	//if db values exist and submit values exist and they are different
+	//then do an update statement
+	else if ($needs_update) {
+	  $sql = 
+	    "UPDATE {cm_series_slot} SET " . $update_fields_string .
+	    "WHERE series_request_nid = :nid AND x = :x and y = :y";
+	  db_query($sql, array(':nid' => $nid, ':x' => $x, ':y' => $y));
+	}
+	else {
+	  //do nothing as the data matches
+	}
+      }
+      //else if it's not in currently existing values, insert it into db
+      else {
+	$field_string = 'series_request_nid, x, y';
+	$value_string = $nid . ', '. $x. ', ' . $y;
+	$is_first = TRUE;
+	$should_insert = TRUE;
+	foreach ($field_values as $field=>$value) {
+	  if ($field == 'channel' and !$value) {
+	    $should_insert = FALSE;
+	    break;
+	  }
+	  $optional_quote = intval($value) ? "'" : '';
+	  $field_string .= ", " . $field;
+	  $value_string .= ", " . $optional_quote . $value . $optional_quote;
+	}
+	if ($should_insert) {
+	  $sql = 
+	    "INSERT INTO {cm_series_slot} (" . $field_string . ") VALUES (".
+	    $value_string . ")";
+	  db_query($sql);
+	}
+
+      }
+    }
+  }
+  
+  if ($max_form_y < $max_db_y) {
+    //deleting extra rows in db since trimmed from form
+    $sql = 
+      "DELETE FROM {cm_series_slot}
+       WHERE series_request_nid = :nid
+       AND airing_id is NULL
+       AND y > :y";
+
+    $args = array(':nid' => $nid,
+		  ':y' => $max_form_y);
+    db_query($sql, $args);
+  }  
+
+  $status = $form_state['values']['slot_grid']['series_request_status'];
+
+  $series_request->field_series_request_status[LANGUAGE_NONE][0]['value'] =
+    $status;
+  field_attach_update('node', $series_request);
+
+}
+
+function cm_series_slot_stash_form_values($form_state) {
+  $ret = array();
+  
+  foreach ($form_state['values']['slot_grid']['slot_grid_cells'] as
+	   $key => $value) {
+
+    $key = str_replace('start_time', 'starttime', $key);
+    $key = str_replace('live_source', 'livesource', $key);
+    $key_array = explode('_', $key);
+
+    $key_array[0] = str_replace('livesource', 'live_source', $key_array[0]);
+    $key_array[0] = str_replace('starttime', 'start_time', $key_array[0]);
+
+    if (intval($key_array[1] && intval($key_array[2]))) {
+      if (($key_array[0] == 'live_source') || ($key_array[0] == 'channel')) {
+	$ret[$key_array[1]][$key_array[2]][$key_array[0]] = $value;
+      }
+      else if (($key_array[0] == 'start_time') && $value['date'] && 
+	       $value['start_time']){
+	if (is_array($value)) {
+	  $ret[$key_array[1]][$key_array[2]][$key_array[0]] = "error";
+	}
+	else {
+	  $ret[$key_array[1]][$key_array[2]][$key_array[0]] = $value;
+	  $time_object = 
+	    new DateTime($value, new DateTimeZone('America/Los_Angeles'));
+	  $ret[$key_array[1]][$key_array[2]]['time_object'] = $time_object;
+	}
+      }
+      else if ($key_array[0] == 'start_time') {
+	$ret[$key_array[1]][$key_array[2]][$key_array[0]] = '';
+      }
+    }
+  }
+
+  return $ret;
+}
+
+function cm_series_slot_premiere_slots($form_values) {
+  $ret = array();
+
+  $premiere_column = $form_values[1];
+  $num_columns = count($form_values);
+
+  foreach($premiere_column as $y => $premiere) {
+    $premiere['repeats'] = array();
+    for ($x = 2; $x <= $num_columns;  $x++) {
+      $premiere['repeats'][] = $form_values[$x][$y];
+    }
+    $ret[$y] = $premiere;
+  } 
+  return $ret;
+}
+
+
+function cm_series_slot_views_data() {
+
+  // The 'group' index will be used as a prefix in the UI for any of this
+  // table's fields, sort criteria, etc. so it's easy to tell where they came
+  // from.
+  $data['cm_series_slot']['table']['group'] = t('CM Series Slot');
+
+  // Define this as a base table – a table that can be described in itself by
+  // views (and not just being brought in as a relationship). In reality this
+  // is not very useful for this table, as it isn't really a distinct object of
+  // its own, but it makes a good example.
+  $data['cm_series_slot']['table']['base'] =
+    array(
+	  'field' => 'slot_id', // This is the identifier field for the view.
+	  'title' => t('CM Series Slot'),
+	  'help' => t('CM Series Slot contains scheduling slots containing '.
+		      'live_source, channel, and start/end time.'),
+	  'weight' => -10,
+	  );
+
+  // This table references the {node} table. The declaration below creates an
+  // 'implicit' relationship to the node table, so that when 'node' is the base
+  // table, the fields are automatically available.
+  $data['cm_series_slot']['table']['join'] = 
+    array(
+	  // Index this array by the table name to which this table refers.
+	  // 'left_field' is the primary key in the referenced table.
+	  // 'field' is the foreign key in this table.
+	  'node' => array(
+			  'left_field' => 'nid',
+			  'field' => 'series_request_nid',
+			  ),
+	  );
+
+  // Next, describe each of the individual fields in this table to Views. 
+  // Node ID table field.
+  $data['cm_series_slot']['slot_id'] = 
+    array(
+	  'title' => t('Slot ID'),
+	  'help' => t('The primary key of the series slot'),
+	  'help' => t('Primary key of the custom cm_series_slot table.'),
+	  'field' => array(
+			   'handler' => 'views_handler_field_numeric',
+			   'click sortable' => TRUE,
+			   ),
+	  'filter' => array(
+			    'handler' => 'views_handler_filter_numeric',
+			    ),
+	  'sort' => array(
+			  'handler' => 'views_handler_sort',
+			  ),
+	
+	  );  
+  
+  // Example numeric text field.
+  $data['cm_series_slot']['series_request_nid'] = 
+    array(
+	  'title' => t('Series Request'),
+	  'help' => t('The nid of the series request that generated the slot'),
+	  'field' => array(
+			   'handler' => 'views_handler_field_node',
+			   'click sortable' => TRUE,
+			   ),
+	  'filter' => array(
+			    'handler' => 'views_handler_filter_numeric',
+			    ),
+	  'sort' => array(
+			  'handler' => 'views_handler_sort',
+			  ),
+	  'relationship' => 
+	  array(
+		'base' => 'node', // The name of the table to join with.
+		'base field' => 'nid', //name of the field on the joined table.
+		'handler' => 'views_handler_relationship',
+		'label' => t('Series Slot Series Request Relationship'),
+		'title' => t('Series Slot Series Request Relationship'),
+		'description' => t('The Request that created the slot.'),
+		),
+
+	  );
+
+  $data['cm_series_slot']['x'] = 
+    array(
+	  'title' => t('X coordinate on the Slot Grid'),
+	  'help' => t('X coordinate on the Slot Grid'),
+	  'field' => array(
+			   'handler' => 'views_handler_field_numeric',
+			   'click sortable' => TRUE,
+			   ),
+	  'filter' => array(
+			    'handler' => 'views_handler_filter_numeric',
+			    ),
+	  'sort' => array(
+			  'handler' => 'views_handler_sort',
+			  ),
+	  );
+
+  $data['cm_series_slot']['y'] = 
+    array(
+	  'title' => t('Y coordinate on the Grid'),
+	  'help' => t('Y coordinate on the Grid'),
+	  'field' => array(
+			   'handler' => 'views_handler_field_numeric',
+			   'click sortable' => TRUE,
+			   ),
+	  'filter' => array(
+			    'handler' => 'views_handler_filter_numeric',
+			    ),
+	  'sort' => array(
+			  'handler' => 'views_handler_sort',
+			  ),
+	  );
+
+  $data['cm_series_slot']['live_source'] = 
+    array(
+	  'title' => t('Live Source'),
+	  'help' => t('Live Source Field Value ID'),
+	  'field' => array(
+			   'handler' => 'views_handler_field_numeric',
+			   'click sortable' => TRUE,
+			   ),
+	  'filter' => array(
+			    'handler' => 'views_handler_filter_numeric',
+			    ),
+	  'sort' => array(
+			  'handler' => 'views_handler_sort',
+			  ),
+
+	  );
+
+  $data['cm_series_slot']['channel'] = 
+    array(
+	  'title' => t('Channel'),
+	  'help' => t('Channel tid for the slot'),
+	  'field' => array(
+			   'handler' => 'views_handler_field_numeric',
+			   'click sortable' => TRUE,
+			   ),
+	  'filter' => array(
+			    'handler' => 'views_handler_filter_numeric',
+			    ),
+	  'sort' => array(
+			  'handler' => 'views_handler_sort',
+			  ),
+
+	  );
+  
+  // Example timestamp field.
+  $data['cm_series_slot']['start_time'] = 
+    array(
+	  'title' => t('Slot Start Time'),
+	  'help' => t('Slot Start Time'),
+	  'field' => array(
+			   'handler' => 'views_handler_field_date',
+			   'click sortable' => TRUE,
+			   ),
+	  'sort' => array(
+			  'handler' => 'views_handler_sort_date',
+			  ),
+	  'filter' => array(
+			    'handler' => 'views_handler_filter_date',
+			    ),
+	  );
+  // Example timestamp field.
+  $data['cm_series_slot']['end_time'] = 
+    array(
+	  'title' => t('Slot End Time'),
+	  'help' => t('Slot End Time'),
+	  'field' => array(
+			   'handler' => 'views_handler_field_date',
+			   'click sortable' => TRUE,
+			   ),
+	  'sort' => array(
+			  'handler' => 'views_handler_sort_date',
+			  ),
+	  'filter' => array(
+			    'handler' => 'views_handler_filter_date',
+			    ),
+	  );
+
+ $data['cm_series_slot']['start_timestamp'] = 
+    array(
+	  'title' => t('Slot Start Timestamp'),
+	  'help' => t('Slot Start Timestamp'),
+	  'field' => array(
+			   'handler' => 'views_handler_field_date',
+			   'click sortable' => TRUE,
+			   ),
+	  'sort' => array(
+			  'handler' => 'views_handler_sort_date',
+			  ),
+	  'filter' => array(
+			    'handler' => 'views_handler_filter_date',
+			    ),
+	  );
+  // Example timestamp field.
+  $data['cm_series_slot']['end_timestamp'] = 
+    array(
+	  'title' => t('Slot End Timestamp'),
+	  'help' => t('Slot End Timestamp'),
+	  'field' => array(
+			   'handler' => 'views_handler_field_date',
+			   'click sortable' => TRUE,
+			   ),
+	  'sort' => array(
+			  'handler' => 'views_handler_sort_date',
+			  ),
+	  'filter' => array(
+			    'handler' => 'views_handler_filter_date',
+			    ),
+	  );
+	  
+  // Example numeric text field.
+  $data['cm_series_slot']['airing_id'] = 
+    array(
+	  'title' => t('Airing ID'),
+	  'help' => t('Airing ID for the airing the slot generated'),
+	  'field' => array(
+			   'handler' => 'views_handler_field_numeric',
+			   'click sortable' => TRUE,
+			   ),
+	  'filter' => array(
+			    'handler' => 'views_handler_filter_numeric',
+			    ),
+	  'sort' => array(
+			  'handler' => 'views_handler_sort',
+			  ),
+	  );
+  return $data;
+}
+
+/**
+ * Helper function to get a single value off of a entity
+ */
+function cm_series_slot_get_single_field_value($entity, $field_name, 
+					 $index = 'value') {
+  if (isset($entity->{$field_name})) {
+    $field = $entity->{$field_name};
+    if (isset($field[LANGUAGE_NONE]) && 
+	isset($field[LANGUAGE_NONE][0]) &&
+	isset($field[LANGUAGE_NONE][0][$index])) {
+      return $field[LANGUAGE_NONE][0][$index];
+    }
+  }
+  return NULL;
+}
+
+function cm_series_slot_get_runtime_seconds_for_tid($tid) {
+  if (!isset($tid) || !$tid) {
+    return NULL;
+  }
+  $term = taxonomy_term_load($tid);
+  if (!$term) {
+    return NULL;
+  }
+
+  $seconds = (isset($term->field_runtime_seconds[LANGUAGE_NONE]) &&
+	      isset($term->field_runtime_seconds[LANGUAGE_NONE][0])) ?
+    $term->field_runtime_seconds[LANGUAGE_NONE][0]['value']: NULL;
+  
+  return $seconds;
+}
+
+function cm_series_slot_entity_delete($entity, $type) {
+  if($type == 'airing') {
+    $sql = 
+      "SELECT slot_id 
+       FROM {cm_series_slot}
+       WHERE airing_id=:airing_id";
+    $args = array(':airing_id' => $entity->airing_id);
+
+    $result = db_query($sql, $args)->fetchObject();
+
+    if ($result && $result->slot_id) {
+      $sql =
+	"UPDATE {cm_series_slot}
+         SET airing_id = NULL
+         WHERE airing_id = :airing_id";
+      $args = array(':airing_id' => $entity->airing_id);
+      db_query($sql, $args);
+    }
+  }
+}
+
+function cm_series_slot_schedule_series_request($series_request, 
+						$series_slots) {
+  //sql used to add airing_id's to the cm_series_slot table
+  $update_cm_series_slot_sql = 
+    "UPDATE cm_series_slot SET airing_id = :airing_id ".
+    "WHERE series_request_nid = :nid and x = :x and y = :y";
+  
+  $premieres = array();
+  $shows = array();
+  $scheduled = array();
+  //iterate all the grid slots we fetched from the cm_series_slot db table
+  //for a series request
+  foreach ($series_slots as $x => $y_values) {
+    foreach ($y_values as $y => $field_values) {
+      //if we have an airing id, skip slot
+      if ($field_values['airing_id'] ||
+	  (isset($scheduled[$y]) && $scheduled[$y])) {
+	$scheduled[$y] = TRUE;
+	continue;
+      }
+      //we are a premiere
+      if ($x == 1) {
+	//create the premiere airing
+	$premiere_airing = 
+	  cm_series_slot_create_new_airing($series_request,
+					   $field_values, TRUE);
+
+	//find or create the show for the airing
+	if ($field_values['live_source']) {
+	  //fixme, make this into a hook rather than a call to a pcm function
+	  $show = pcm_airing_create_live_show($premiere_airing);
+	  $start = cm_series_slot_get_single_field_value($premiere_airing, 
+							 'field_airing_date', 
+							 'value');
+	  
+	  $start_object = 
+	    new DateTime($start, new DateTimeZone('UTC'));
+	  $start_object->setTimeZone(new DateTimeZone('America/Los_Angeles'));
+	  
+	  $show->field_premier_date[LANGUAGE_NONE][0]['value'] = 
+	    $start_object->format('Y-m-d');
+	  field_attach_update('node', $show);
+	}
+	else {
+	  //fixme, make this into a hook rather than a call to a pcm function
+	  $show = pcm_airing_get_placeholder_show($premiere_airing);
+	}
+
+	$premiere_airing->field_airing_show_ref[LANGUAGE_NONE][0]['target_id']
+	  = $show->nid;
+
+	//store the show so repeat/subsequent airings know their show
+	$shows[$y] = $show;
+
+	//store the premiere, we will create after all of its subsequent
+	//airings are created
+	$premieres[$y] = $premiere_airing;
+      }
+      else {
+	//create the repeat/subsequent airing
+	$sub_airing = cm_series_slot_create_new_airing($series_request,
+						       $field_values, FALSE);
+
+	//fetch teh show from when we created the premiere
+	$show = $shows[$y];
+	$sub_airing->field_airing_show_ref[LANGUAGE_NONE][0]['target_id']
+	  = $show->nid;
+
+
+	//fetch the premiere airing's start time
+	$premiere_start = 
+	  cm_series_slot_get_single_field_value($premieres[$y],
+						'field_airing_date', 
+						'value');
+	$repeat_start = 
+	  cm_series_slot_get_single_field_value($sub_airing,
+						'field_airing_date', 
+						'value');
+	if ($premiere_start == $repeat_start) {
+	  $sub_airing->field_is_show_simul_premiere[LANGUAGE_NONE][0]['value']
+	    = 1;
+	}
+	//save the airing, get the id, and store in the subsequent field
+	entity_save('airing', $sub_airing);
+	$sub_airing_id = entity_id('airing', $sub_airing);
+	
+	//update cm_series_slot with the newly created airing
+	$args = array(':airing_id' => $sub_airing_id, 
+		      ':nid' => $series_request->nid, ':x' => $x, ':y' => $y);
+	db_query($update_cm_series_slot_sql, $args);
+
+	$premieres[$y]->field_subsequent_airings[LANGUAGE_NONE][] =
+	  array('target_id' => $sub_airing_id);
+      }
+    }
+  }
+  //now that all the repeat/subsequent airings have been created,save premieres
+  foreach ($premieres as $y => $premiere_airing) {
+    entity_save('airing', $premiere_airing);
+
+    $premiere_airing_id = entity_id('airing', $premiere_airing);
+
+    //update cm_series_slot with the newly created airing
+    $args = array(':airing_id' => $premiere_airing_id, 
+		  ':nid' => $series_request->nid, ':x' => 1, ':y' => $y);
+    db_query($update_cm_series_slot_sql, $args);
+    
+
+  }
+
+  //fixme set series request to scheduled
+  $series_request->field_series_request_status[LANGUAGE_NONE][0]['value'] =
+    "Scheduled";
+  node_save($series_request);
+  
+
+  return TRUE;
+}
+
+function cm_series_slot_create_new_airing($series_request,
+					  $field_values, 
+					  $is_premiere) {
+
+  $new_airing = entity_create('airing', array());
+
+  $project_id =
+    cm_series_slot_get_single_field_value($series_request, 
+					  'field_request_project', 
+					  'target_id');      
+  $new_airing->field_airing_project_ref[LANGUAGE_NONE][0]['target_id'] = 
+    $project_id;
+  $new_airing->field_series_request[LANGUAGE_NONE][0]['target_id'] =
+    $series_request->nid;
+
+  
+  if ($field_values['live_source']) {
+    $new_airing->field_live_source[LANGUAGE_NONE][0]['value'] = 
+      $field_values['live_source'];
+  }
+
+  $new_airing->field_airing_channel[LANGUAGE_NONE][0]['tid'] = 
+    $field_values['channel'];
+
+  $start_object = new DateTime($field_values['start_time'],
+			       new DateTimeZone('America/Los_Angeles'));
+  $start_object->setTimeZone(new DateTimeZone('UTC'));
+
+  $end_object = new DateTime($field_values['end_time'],
+			       new DateTimeZone('America/Los_Angeles'));
+  $end_object->setTimeZone(new DateTimeZone('UTC'));
+
+  $new_airing->field_airing_date[LANGUAGE_NONE][0]['value'] = 
+    $start_object->format('Y-m-d H:i:s');
+  $new_airing->field_airing_date[LANGUAGE_NONE][0]['value2'] = 
+    $end_object->format('Y-m-d H:i:s');
+
+  //fixme add a real settings form element for the variable_get
+  $new_airing->field_airing_type[LANGUAGE_NONE][0]['tid'] =
+    variable_get('cm_series_slot_airing_type_series_tid', 820);
+    
+  
+  if ($is_premiere) {
+    $new_airing->field_is_show_premiere_date[LANGUAGE_NONE][0]['value'] =
+      1;
+    $new_airing->field_subsequent_airings[LANGUAGE_NONE] = array();
+  }
+
+  return $new_airing;
+}
+
+function cm_series_slot_get_slots_for_batch($series_request_nid) {
+  $slots = cm_series_slot_get_slots_for_series_request($series_request_nid);
+  if ($slots) {
+    return $slots;
+  }
+}
+
+function cm_series_slot_series_request_cleanup_link($series_request) {
+  $is_live = cm_series_slot_get_single_field_value($series_request, 
+						   'field_live', 
+						   'value');  
+  if ($is_live) {
+    $ret = l("Show/Airing Cleanup", 
+	     "admin/programming/series-request/show-cleanup/".
+	     $series_request->nid);
+  }
+  else{
+    $ret = 
+      l("Show/Airing Cleanup", 
+	"admin/programming/series-request/airing-cleanup/" .
+	$series_request->nid);
+  } 
+
+  return $ret;
+}
+
+function cm_series_slot_series_request_links($nid) {
+  $series_request = $nid ? node_load($nid) : NULL;
+  if (!$series_request) {
+    return '';
+  }
+
+  $ret = "<ul><li>";
+  $ret .= cm_series_slot_series_request_cleanup_link($series_request);
+  $ret .= "</li><li>";
+ 
+  $ret .= cm_series_slot_grid_link($series_request->nid);
+  $ret .= "</li></ul>";
+
+  return $ret;
+}
+
+function cm_series_slot_grid_link($series_request_nid) {
+  $slots = cm_series_slot_get_slots_for_batch($series_request_nid);
+
+  if ($slots) {
+    $text = t("Edit Slot Grid");
+  }
+  else {
+    $text = t("Slot Grid");
+  }
+
+  $ret = l($text, 'admin/programming/slot_grid',
+            array('query'=>array('series_request_nid' =>
+                                 $series_request_nid)));
+  return $ret;
+
+}
+
+function cm_series_slot_cache($nid) {
+  $ret = '';
+
+  if (!$nid) {
+    return $ret;
+  }
+  $var_name = "cm_series_slot_cache_for_series_request_" . $nid;
+
+  global $$var_name;
+
+  if (isset($$var_name)) {
+    return $$var_name;
+  }
+  $series_slots = cm_series_slot_get_slots_for_series_request($nid);
+  $$var_name = $series_slots;
+
+  return $series_slots;
+}
+
+function cm_series_slot_display_airing($airing, $show) {
+  $wrapper = entity_metadata_wrapper('airing', $airing);
+  $is_premiere = $wrapper->field_is_show_premiere_date->value();
+  $is_simul_premiere = $wrapper->field_is_show_simul_premiere->value();
+  $live_source = $wrapper->field_live_source->label();
+  $channel = $wrapper->field_airing_channel->label();
+  $date = $wrapper->field_airing_date->value();
+  $start = $date ? $date['value'] : '';
+  $end = $date ?  $date['value2'] : '';
+
+  $start = new DateTime($start,new DateTimeZone('UTC'));
+  $end = new DateTime($end,  new DateTimeZone('UTC'));
+
+  $end->setTimeZone(new DateTimeZone('America/Los_Angeles'));
+  $start->setTimeZone(new DateTimeZone('America/Los_Angeles'));
+
+  $day = $start->format('m/d/Y');
+  $start = $start->format('h:ia');
+  $end = $end->format('h:ia');
+  
+  $ret = '<ul><li>';
+  if ($live_source) {
+    $ret .= "<strong>Live Source:</strong> ".$live_source;
+    $ret .= "</li><li>";
+  }
+  $ret .= "<strong>Channel:</strong> ".$channel;
+  $ret .= "</li><li>";
+  $ret .= "<strong>Date:</strong> ".$day;
+  $ret .= "</li><li>";
+  $ret .= "<strong>Start:</strong> ".$start;
+  $ret .= "</li><li>";
+  $ret .= "<strong>End:</strong> ".$end;
+
+  $ret .= $show ? "</li><li><strong>Show:</strong> " .
+    l($show->title, "node/" . $show->nid) . "</li>" : "";
+  
+  $ret .= "</li></ul>";
+  
+  return $ret;
+}
+
+
+function cm_series_slot_id_to_label_view_field($row, $type) {
+  $ret = '';
+  $slots = cm_series_slot_cache($row->nid);
+  
+  $series_request = node_load($row->nid);
+
+  $slot = $slots[$row->x][$row->y];
+
+  if ($slot) {
+    if ($type == 'channel') {
+      $channel = taxonomy_term_load($slot['channel']);
+      $ret = $channel->name;
+    }
+    else if ($type == 'live_source') {
+      $source = $slot['live_source']; 
+      $my_field = field_info_field('field_live_source');                    
+      $allowed_values= list_allowed_values($my_field);                      
+      $source = $allowed_values[$source];
+
+      $ret = $source;
+    }
+    else if ($type == 'series_request') {
+      $ret = l($series_request->title, 
+	      "admin/programming/slot_grid",
+	      array('query'=>array('series_request_nid' => 
+				   $series_request->nid)));
+
+    }
+    else if ($type = 'premiere') {
+      $ret .= ($row->x == 1) ? "Yes" : '';
+    }
+  }
+  return $ret;
+}
+
+
+/*
+ *  Implements hook_form_alter
+ */
+function cm_series_slot_form_alter(&$form, &$form_state, $form_id) {
+
+  if ($form['#id'] == 
+      'views-exposed-form-series-request-series-slot-master-list-page-1') {
+
+    $start = &$form['start_timestamp']['min'];
+
+    $end = &$form['start_timestamp']['max'];
+       
+    $timepicker_options = array(
+				'showPeriod' => TRUE,
+				'amPmText' =>array('am','pm'),
+				'periodSeparator' => '',
+				'rows' => 2,
+				'minutes' => 
+				array(
+				      'starts' => 0,
+				      'ends' => 30,
+				      'interval' => 30,
+				      ),
+				'showCloseButton' => TRUE,
+				'closeButtonText' => 
+				t('Close'),
+				);  
+  
+
+    $start['#type'] = 'date_popup';
+    $start['#date_label_position'] = 'within';
+    $start['#timepicker'] = 'timepicker';
+    $start['#timepicker_options'] = $timepicker_options;
+
+    $end['#type'] = 'date_popup';
+    $end['#date_label_position'] = 'within';
+    $end['#timepicker'] = 'timepicker';
+    $end['#timepicker_options'] = $timepicker_options;    
+  }
+}

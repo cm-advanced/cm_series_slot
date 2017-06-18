@@ -1,0 +1,12 @@
+name = cm_series_slot
+description = Module will allow operators to schedule series slots. Each slot is either a premiere of a show or a repeat of a show. 
+core = 7.x
+
+package = Community Media Advanced
+version = 7.x-1.0
+project = "cm_series_slot"
+project_status_url = https://github.com/cm-advanced/cm_series_slot
+
+dependencies[] = date_popup_timepicker
+dependencies[] = cm_airing
+scripts[] = cm_series_slot.js

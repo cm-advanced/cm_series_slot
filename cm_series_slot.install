@@ -1,0 +1,81 @@
+<?php
+
+/**
+ * Implementation of hook_schema().
+ */
+function cm_series_slot_schema() {
+  $schema['cm_series_slot'] = 
+    array(
+	  'description' => t('Stores Series Scheduling Slot '.
+			     "Information, datetime, source, and channel."),
+	  'fields' => 
+	  array(
+		'slot_id' => 
+		array(
+		      'description' => 'Primary Key of a Slot.',
+		      'type' => 'serial',
+		      'unsigned' => TRUE,
+		      'not null' => TRUE),
+		'series_request_nid' => 
+		array(
+		      'description' => 
+		      'The Series Request that generated the slot.',
+		      'type' => 'int',
+		      'not null' => TRUE),
+		'x' => 
+		array(
+		      'description' => 
+		      'The x coordinate in the slot grid.',
+		      'type' => 'int',
+		      'not null' => TRUE),
+		'y' => 
+		array(
+		      'description' => 
+		      'The y coordinate in the slot grid.',
+		      'type' => 'int',
+		      'not null' => TRUE),
+		'live_source' => 
+		array(
+		      'description' => 'The field value on field_live_source.',
+		      'type' => 'int',
+		      'not null' => FALSE),
+		'channel'    => 
+		array(
+		      'description' => 'The tid of the Channel term.',
+		      'type' => 'int',
+		      'not null' => TRUE),
+		'start_time'    => 
+		array(
+		      'description' => 'The Start Time of The Series Slot.',
+		      'mysql_type' => 'datetime',
+		      'not null' => TRUE),	    
+		'end_time'    => 
+		array(
+		      'description' => 'The End Time of The Series Slot.',
+		      'mysql_type' => 'datetime',
+		      'not null' => TRUE),	    
+		'start_timestamp'    => 
+		array(
+		      'description'=>'The Start Timestamp of The Series Slot.',
+		      'type' => 'int',
+		      'not null' => TRUE),	    
+		'end_timestamp'    => 
+		array(
+		      'description' => 'The End Timestamp of The Series Slot.',
+		      'type' => 'int',
+		      'not null' => TRUE),	    
+		'airing_id'    => 
+		array(
+		      'description' => 'The airing scheduled for this slot.',
+		      'type' => 'int',
+		      ),
+		),
+	  'indexes' => array(
+			     'series_request_nid' => 
+			     array('series_request_nid'), 
+			     'channel' => array('channel')),
+	  'primary key' => array('slot_id'),
+	  );
+  
+  return $schema;
+}

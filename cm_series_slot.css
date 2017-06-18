@@ -1,0 +1,9 @@
+table.cm_series_slot_grid td, table.cm_series_slot_grid th {
+  border: 1px solid #cccccc;
+}
+
+.view-series-request-series-slot-master-list caption {
+    color: red;
+    font-size: 20px;
+    text-align: left;
+}
